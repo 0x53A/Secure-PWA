@@ -1,0 +1,8 @@
+{
+  "repository": "0x53A/Secure-PWA",
+  "repository_id": "1409252903",
+  "owner_id": "4236651",
+  "ref": "refs/heads/main",
+  "workflow": ".github/workflows/release.yml",
+  "issuer": "https://token.actions.githubusercontent.com"
+}

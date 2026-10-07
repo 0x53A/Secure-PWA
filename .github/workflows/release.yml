@@ -1,0 +1,94 @@
+name: Build and attest PWA
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Serial publication, without interrupting a release being tested/deployed.
+concurrency:
+  group: secure-pwa-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install build tools
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --target wasm32-unknown-unknown --component rustfmt --component clippy
+          cargo install wasm-bindgen-cli --version 0.2.127 --locked
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Check Rust and updater behavior
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          npm test
+      - name: Build browser app
+        run: npm run build
+      - name: Test browser behavior
+        run: npm run test:browser
+      - name: Package the exact application files
+        env:
+          BUILD_COMMIT: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+          BUILD_RUN_NUMBER: ${{ github.run_number }}
+          BUILD_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          mkdir -p target/release-artifact
+          cargo run --locked -- pack dist/assets target/release-artifact/release.json "$BUILD_COMMIT" "$BUILD_RUN_ID" "$BUILD_RUN_NUMBER" "$BUILD_RUN_ATTEMPT"
+      - name: Attest release
+        id: attest
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: target/release-artifact/release.json
+      - name: Assemble publication and publish hashes in run summary
+        env:
+          ATTESTATION_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: node tools/finalize.mjs target/release-artifact/release.json "$ATTESTATION_PATH"
+      - name: Verify the actual signed release in Chromium before publication
+        env:
+          VERIFY_RELEASE: target/release-artifact/release.json
+          VERIFY_ATTESTATION: ${{ steps.attest.outputs.bundle-path }}
+        run: npm run test:browser
+      - name: Preserve build and hash evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: secure-pwa-audit-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/pages/
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: target/pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
